@@ -1,0 +1,23 @@
+{
+  "python.defaultInterpreterPath": "face/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.analysis.autoSearchPaths": true,
+  "python.analysis.useLibraryCodeForTypes": true,
+  "python.analysis.typeCheckingMode": "basic",
+  "jupyter.askForKernelRestart": false,
+  "jupyter.interactiveWindow.creationMode": "perFile",
+  "jupyter.logging.level": "error",
+  "terminal.integrated.defaultProfile.windows": "Command Prompt",
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/site-packages": true,
+    "**/.git": true,
+    "**/*.pyc": true
+  },
+  "search.exclude": {
+    "**/site-packages": true,
+    "**/face/Lib/**": true,
+    "**/face/Scripts/**": true
+  }
+}
