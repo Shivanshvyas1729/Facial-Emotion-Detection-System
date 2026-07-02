@@ -2,6 +2,9 @@
 
 ---
 
+live link
+https://facial-emotion-detection-system.streamlit.app/
+
 ## 🚀 Project Overview & Web Interface
 
 This is an AI-powered **Facial Emotion Detection System** running a custom-trained **YOLO** model (`best.pt`). We have built a premium, responsive glassmorphism web interface that allows users to analyze facial expressions in real-time.
@@ -111,4 +114,4 @@ The larger the area, the better.
 
 What is mAP@0.5?
 
- average Precision (AP) is calculated for each class. The mean Average Precision (mAP) is then calculated by taking the average of the AP values across all classes.
+ average Precision (AP) is calculated for each class. The mean Average Precision (mAP) is then calculated by taking the average of the AP values across all classes.
