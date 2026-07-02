@@ -1,7 +1,10 @@
-fastapi[standard]
+# fastapi[standard]
 ultralytics
-ipykernel
-roboflow
+# ipykernel
+# roboflow
 streamlit
 pandas
 opencv-python-headless
+numpy
+pandas
+Pillow
