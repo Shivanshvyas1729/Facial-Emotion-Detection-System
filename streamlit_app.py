@@ -5,6 +5,15 @@ from PIL import Image
 from ultralytics import YOLO
 import pandas as pd
 import time
+import threading
+
+try:
+    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
+    import av
+    WEBRTC_AVAILABLE = True
+except ImportError:
+    WEBRTC_AVAILABLE = False
+
 
 # Set page configuration with wide layout and custom title
 st.set_page_config(
@@ -68,6 +77,65 @@ def load_model():
 # Load model
 model = load_model()
 
+# WebRTC Video Processor for real-time browser streaming
+if WEBRTC_AVAILABLE:
+    class EmotionDetectionProcessor(VideoProcessorBase):
+        def __init__(self):
+            self.conf_threshold = 0.34
+            self.lock = threading.Lock()
+            self.latest_detections = []
+            self.latest_inference_time = 0.0
+
+        def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+            img = frame.to_ndarray(format="bgr24")
+            
+            if model is None:
+                return frame
+                
+            with self.lock:
+                conf_thresh = self.conf_threshold
+                
+            start_time = time.time()
+            try:
+                results = model.predict(
+                    source=img,
+                    conf=conf_thresh,
+                    imgsz=640,
+                    verbose=False
+                )
+                inference_time = (time.time() - start_time) * 1000  # in ms
+                
+                detections = []
+                annotated_bgr = img
+                
+                if results and len(results) > 0:
+                    result = results[0]
+                    annotated_bgr = result.plot()
+                    
+                    if result.boxes is not None and len(result.boxes) > 0:
+                        xyxy = result.boxes.xyxy.cpu().numpy() if hasattr(result.boxes.xyxy, "cpu") else result.boxes.xyxy
+                        confs = result.boxes.conf.cpu().numpy() if hasattr(result.boxes.conf, "cpu") else result.boxes.conf
+                        classes = result.boxes.cls.cpu().numpy() if hasattr(result.boxes.cls, "cpu") else result.boxes.cls
+                        
+                        for box, conf, cls in zip(xyxy, confs, classes):
+                            label = model.names.get(int(cls), str(int(cls)))
+                            detections.append({
+                                "Emotion": label.capitalize(),
+                                "Confidence": float(conf)
+                            })
+                
+                with self.lock:
+                    self.latest_detections = detections
+                    self.latest_inference_time = inference_time
+                    
+                return av.VideoFrame.from_ndarray(annotated_bgr, format="bgr24")
+            except Exception as e:
+                return frame
+else:
+    class EmotionDetectionProcessor:
+        pass
+
+
 # Title and introduction
 st.title("😊 Facial Emotion Detection System")
 st.markdown("An AI-powered application that detects human faces and classifies their facial emotions in real-time.")
@@ -88,7 +156,7 @@ conf_threshold = st.sidebar.slider(
 # Input method selection
 input_method = st.sidebar.radio(
     "Select Input Source",
-    ("Upload Image", "Use Webcam (Snapshot)", "Live Webcam (Local)")
+    ("Upload Image", "Live Webcam (Browser via WebRTC)", "Webcam Snapshot (Fallback)")
 )
 
 # Display class labels list if model is loaded successfully
@@ -104,122 +172,96 @@ if model:
 if model is None:
     st.error("Could not initialize the detection model. Make sure `best.pt` is in the project root directory.")
 else:
-    if input_method == "Live Webcam (Local)":
-        st.subheader("🎥 Live Local Webcam Detection")
+    if input_method == "Live Webcam (Browser via WebRTC)":
+        st.subheader("🎥 Live Web Browser Webcam Detection")
         st.markdown(
-            "This mode captures live frames from your system camera using OpenCV and performs real-time emotion detection. "
-            "Make sure no other program is using your webcam, then check the box below to start."
+            "This mode captures live frames from your browser camera using WebRTC and performs real-time emotion detection. "
+            "Please allow camera permissions in your browser when prompted, and click **Start**."
         )
         
-        run_live = st.checkbox("Toggle Live Webcam Stream (On / Off)", value=False)
-        
-        if run_live:
+        if not WEBRTC_AVAILABLE:
+            st.warning("⚠️ `streamlit-webrtc` is not installed or supported in this environment. Falling back to Snapshot mode.")
+            st.info("Please select **Webcam Snapshot (Fallback)** in the sidebar Control Panel to use your webcam.")
+        else:
+            # Webrtc streamer component
+            ctx = webrtc_streamer(
+                key="emotion-webrtc",
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration={
+                    "iceServers": [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}]
+                },
+                video_processor_factory=EmotionDetectionProcessor,
+                media_stream_constraints={"video": True, "audio": False},
+                async_processing=True
+            )
+            
+            # Placeholders for statistics below the stream
             col1, col2 = st.columns([2, 1])
             
             with col1:
-                frame_placeholder = st.empty()
-            
+                st.info("💡 Real-time annotated video stream is displayed above. Emotion bounding boxes and confidence levels are plotted directly on the frames.")
+                
             with col2:
                 st.subheader("Live Stats")
                 metric_col1, metric_col2 = st.columns(2)
-                with metric_col1:
-                    faces_placeholder = st.empty()
-                with metric_col2:
-                    fps_placeholder = st.empty()
+                faces_placeholder = metric_col1.empty()
+                fps_placeholder = metric_col2.empty()
                 
                 info_placeholder = st.empty()
                 table_placeholder = st.empty()
                 chart_placeholder = st.empty()
-            
-            # Start video capture
-            cap = cv2.VideoCapture(0)
-            
-            # Set resolution for faster inference
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            
-            try:
-                while run_live:
-                    ret, frame = cap.read()
-                    if not ret:
-                        st.error("Unable to read frame from webcam. Please check if your webcam is connected or in use by another app.")
-                        break
+
+            if ctx.video_processor:
+                # Update confidence threshold dynamically in the video processor
+                ctx.video_processor.conf_threshold = conf_threshold
+                
+                # Retrieve latest detections and stats safely
+                with ctx.video_processor.lock:
+                    detections = ctx.video_processor.latest_detections
+                    inference_time = ctx.video_processor.latest_inference_time
+                
+                # Draw stats
+                faces_placeholder.markdown(f"""
+                    <div class="metric-card">
+                        <div class="metric-value">{len(detections)}</div>
+                        <div class="metric-label">Faces</div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                fps_val = 1000 / inference_time if inference_time > 0 else 0
+                fps_placeholder.markdown(f"""
+                    <div class="metric-card">
+                        <div class="metric-value">{fps_val:.1f}</div>
+                        <div class="metric-label">FPS (Inf)</div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                if len(detections) > 0:
+                    df = pd.DataFrame(detections)
+                    primary_idx = df['Confidence'].idxmax()
+                    primary_emotion = df.loc[primary_idx]['Emotion']
+                    primary_conf = df.loc[primary_idx]['Confidence']
                     
-                    start_time = time.time()
-                    results = model.predict(
-                        source=frame,
-                        conf=conf_threshold,
-                        imgsz=640,
-                        verbose=False
+                    info_placeholder.info(f"**Primary Emotion:** {primary_emotion} ({primary_conf*100:.1f}%)")
+                    
+                    display_df = df.copy()
+                    display_df['Confidence'] = display_df['Confidence'].map(lambda x: f"{x*100:.1f}%")
+                    table_placeholder.dataframe(display_df, use_container_width=True, hide_index=True)
+                    
+                    chart_data = df.groupby('Emotion')['Confidence'].mean().reset_index()
+                    chart_placeholder.bar_chart(
+                        data=chart_data,
+                        x='Emotion',
+                        y='Confidence',
+                        color='#2563eb',
+                        use_container_width=True
                     )
-                    inference_time = (time.time() - start_time) * 1000  # in ms
-                    
-                    if results and len(results) > 0:
-                        result = results[0]
-                        annotated_bgr = result.plot()
-                        annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
-                        
-                        frame_placeholder.image(annotated_rgb, use_container_width=True)
-                        
-                        detections = []
-                        if result.boxes is not None and len(result.boxes) > 0:
-                            xyxy = result.boxes.xyxy.cpu().numpy() if hasattr(result.boxes.xyxy, "cpu") else result.boxes.xyxy
-                            confs = result.boxes.conf.cpu().numpy() if hasattr(result.boxes.conf, "cpu") else result.boxes.conf
-                            classes = result.boxes.cls.cpu().numpy() if hasattr(result.boxes.cls, "cpu") else result.boxes.cls
-                            
-                            for box, conf, cls in zip(xyxy, confs, classes):
-                                label = model.names.get(int(cls), str(int(cls)))
-                                detections.append({
-                                    "Emotion": label.capitalize(),
-                                    "Confidence": float(conf)
-                                })
-                        
-                        faces_placeholder.markdown(f"""
-                            <div class="metric-card">
-                                <div class="metric-value">{len(detections)}</div>
-                                <div class="metric-label">Faces</div>
-                            </div>
-                        """, unsafe_allow_html=True)
-                        
-                        fps_placeholder.markdown(f"""
-                            <div class="metric-card">
-                                <div class="metric-value">{1000/inference_time:.1f}</div>
-                                <div class="metric-label">FPS (Inf)</div>
-                            </div>
-                        """, unsafe_allow_html=True)
-                        
-                        if len(detections) > 0:
-                            df = pd.DataFrame(detections)
-                            primary_idx = df['Confidence'].idxmax()
-                            primary_emotion = df.loc[primary_idx]['Emotion']
-                            primary_conf = df.loc[primary_idx]['Confidence']
-                            info_placeholder.info(f"**Primary Emotion:** {primary_emotion} ({primary_conf*100:.1f}%)")
-                            
-                            display_df = df.copy()
-                            display_df['Confidence'] = display_df['Confidence'].map(lambda x: f"{x*100:.1f}%")
-                            table_placeholder.dataframe(display_df, use_container_width=True, hide_index=True)
-                            
-                            chart_data = df.groupby('Emotion')['Confidence'].mean().reset_index()
-                            chart_placeholder.bar_chart(
-                                data=chart_data,
-                                x='Emotion',
-                                y='Confidence',
-                                color='#2563eb',
-                                use_container_width=True
-                            )
-                        else:
-                            info_placeholder.warning("No emotions detected above threshold.")
-                            table_placeholder.empty()
-                            chart_placeholder.empty()
-                    
-                    time.sleep(0.01)
-                    
-            except Exception as e:
-                st.error(f"An error occurred: {e}")
-            finally:
-                cap.release()
-        else:
-            st.info("👈 Check the checkbox above to turn on your webcam and start live emotion detection.")
+                else:
+                    info_placeholder.warning("No emotions detected above threshold.")
+                    table_placeholder.empty()
+                    chart_placeholder.empty()
+                
+                st.caption("⚡ Note: Stats refresh whenever the Streamlit page is rerun or interacted with. The video stream itself is fully real-time.")
             
     else:
         # Static Image / Snapshot Detection Logic
