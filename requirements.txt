@@ -4,3 +4,4 @@ ipykernel
 roboflow
 streamlit
 pandas
+opencv-python-headless
