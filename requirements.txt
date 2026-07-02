@@ -2,6 +2,5 @@ fastapi[standard]
 ultralytics
 ipykernel
 roboflow
-
-
-
+streamlit
+pandas
